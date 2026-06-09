@@ -1,0 +1,27 @@
+[project]
+name = "fifa-fantasy-cli"
+version = "0.1.0"
+description = "A rich terminal CLI for FIFA World Cup Fantasy (play.fifa.com/fantasy)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.27",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.6",
+    "platformdirs>=4.0",
+    "python-dateutil>=2.9",
+]
+
+[project.optional-dependencies]
+browser = ["browser-cookie3>=0.19"]
+
+[project.scripts]
+fifa = "fifafantasy.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fifafantasy"]
