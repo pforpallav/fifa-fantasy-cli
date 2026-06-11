@@ -58,6 +58,11 @@ class FifaClient:
         resp = self._http.post(url, json=json_body)
         return self._handle(resp, auth)
 
+    def raw(self, method: str, url: str, *, json_body: dict | None = None) -> httpx.Response:
+        """Low-level request that does NOT treat 403 as auth — write endpoints use
+        403 for validation failures (e.g. 'Player is not in team')."""
+        return self._http.request(method, url, json=json_body)
+
     def _handle(self, resp: httpx.Response, auth: bool) -> Any:
         if resp.status_code == 403:
             raise AuthError(

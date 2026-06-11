@@ -20,7 +20,7 @@ from typing import Optional
 import typer
 
 from .. import config, data, output, rules
-from ..client import AuthError, FifaClient, FifaError
+from ..client import AuthError, FifaClient, FifaError, _parse_errors
 from ..render import console, team_pitch, team_view
 
 _POS = ("GK", "DEF", "MID", "FWD")
@@ -30,12 +30,12 @@ team_app = typer.Typer(help="Your squad: view, swaps, captain, validate, backup.
 transfers_app = typer.Typer(help="Transfers: plan (dry-run) and make.")
 chips_app = typer.Typer(help="Chips / boosters.")
 
-CHIPS = {  # cli name -> save field
-    "wildcard": "wildCard",
-    "twelfth-man": "twelfthMan",
-    "max-captain": "maxCaptain",
-    "clean-sheet": "cleanSheet",
-    "qualification": "qualification",
+CHIPS = {  # cli name -> (booster path segment, needs a player?)
+    "wildcard": ("wild-card", False),
+    "max-captain": ("max-captain", False),
+    "twelfth-man": ("twelfth-man", True),
+    "clean-sheet": ("clean-sheet", False),
+    "qualification": ("qualification", False),
 }
 
 
@@ -61,29 +61,36 @@ def _get_team(client) -> dict:
     return team
 
 
-def _save_squad(client, lineup: dict, bench: dict) -> dict:
-    """The one real write: POST /team {lineup, bench}. Maps known failures."""
-    try:
-        return client.post_json(
-            config.URL_TEAM, json_body={"lineup": lineup, "bench": bench}, auth=True
-        )
-    except (AuthError, FifaError) as e:
-        msg = str(e)
-        if "second_team" in msg:
-            raise output.fail(
-                "Save rejected: in-season team edits aren't open via POST /team (it only "
-                "creates a team, and one exists). This route needs a one-time DevTools "
-                "capture — see README › Write operations.",
-                code=output.EXIT_ERROR, serverMessage=msg)
-        raise output.fail(f"Save failed: {msg}", code=output.EXIT_ERROR)
+def _active_round() -> int:
+    """The round substitutions/transfers apply to (first non-complete)."""
+    rounds = data.load_rounds()
+    for r in rounds:
+        if r.status != "complete":
+            return r.id
+    return rounds[0].id
 
 
-def _gated(action: str):
-    raise output.fail(
-        f"'{action}' uses a write route not yet confirmed. Capture it once from the browser "
-        "(DevTools → Network → do the action → Copy as cURL) and share it; "
-        "see README › Write operations.",
-        code=output.EXIT_ERROR, pending=action)
+def _write(client, url: str, body: dict | None = None) -> dict:
+    """POST a write endpoint. 403 here means validation (not auth), so we read the
+    server's message and exit 1; only true credential failures exit 2."""
+    resp = client.raw("POST", url, json_body=body)
+    if resp.status_code < 400:
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+    msg = _parse_errors(resp)
+    is_auth = resp.status_code == 401 or "credential" in msg.lower()
+    raise output.fail(f"Save failed: {msg}",
+                      code=output.EXIT_AUTH if is_auth else output.EXIT_ERROR)
+
+
+def _lineup_subs(current: dict, target: dict) -> list[dict]:
+    """Substitutions (out/in pairs) to turn `current` lineup into `target` (same 15)."""
+    cur = set(rules.lineup_ids(current.get("lineup") or {}))
+    tgt = set(rules.lineup_ids(target.get("lineup") or {}))
+    outs, ins = list(cur - tgt), list(tgt - cur)
+    return [{"out": o, "in": i} for o, i in zip(outs, ins)]
 
 
 # ---------- shared helpers ----------
@@ -192,7 +199,8 @@ def swap(
 
         committed = False
         if commit:
-            _save_squad(client, after["lineup"], after["bench"])
+            _write(client, config.URL_SUBSTITUTION,
+                   {"roundId": _active_round(), "subs": [{"out": out_p.id, "in": in_p.id}]})
             committed = True
     detail = {"out": {"id": out_p.id, "name": out_p.name},
               "in": {"id": in_p.id, "name": in_p.name},
@@ -215,7 +223,8 @@ def _set_armband(field: str, other: str, target_query: str, commit: bool, label:
         after[field] = target.id
         committed = False
         if commit:
-            _gated(label)  # captain/vice route pending capture
+            url = (config.URL_TEAM_CAPTAIN if field == "captain" else config.URL_TEAM_VICE)
+            _write(client, url.format(pid=target.id))
             committed = True
     detail = {label: {"id": target.id, "name": target.name},
               "summary": f"{label} → {target.name}"}
@@ -285,7 +294,19 @@ def restore(commit: bool = typer.Option(False, "--commit", help="Actually save t
     committed = False
     with _session() as client:
         if commit:
-            _save_squad(client, saved["lineup"], saved["bench"])
+            current = _get_team(client)
+            if set(rules.squad_ids(current)) != set(rules.squad_ids(saved)):
+                _ = output.fail("Backup has a different set of players (transfers happened). "
+                                "Restore lineup-only isn't possible; use `fifa transfers` instead.",
+                                code=output.EXIT_ERROR)
+            subs = _lineup_subs(current, saved)
+            if subs:
+                _write(client, config.URL_SUBSTITUTION,
+                       {"roundId": _active_round(), "subs": subs})
+            if saved.get("captain") and saved["captain"] != current.get("captain"):
+                _write(client, config.URL_TEAM_CAPTAIN.format(pid=saved["captain"]))
+            if saved.get("vice") and saved["vice"] != current.get("vice"):
+                _write(client, config.URL_TEAM_VICE.format(pid=saved["vice"]))
             committed = True
     _emit_plan("restore", {"summary": f"restore backup ({config.BACKUP_FILE.name})"},
                saved, data.player_map(), data.squad_map(), committed)
@@ -337,7 +358,9 @@ def _run_transfers(pairs: list[tuple], commit: bool):
                             violations=errs, moves=detail["moves"])
         committed = False
         if commit:
-            _save_squad(client, after["lineup"], after["bench"])
+            payload = {"transfers": [{"out": m["out"]["id"], "in": m["in"]["id"]}
+                                     for m in detail["moves"]]}
+            _write(client, config.URL_TRANSFERS.format(round=_active_round()), payload)
             committed = True
     _emit_plan("transfer", detail, after, data.player_map(), data.squad_map(), committed)
 
@@ -366,6 +389,8 @@ def transfers_make(
 @chips_app.command("play")
 def chips_play(
     name: str = typer.Argument(..., help="Chip: " + " | ".join(CHIPS)),
+    player: Optional[str] = typer.Option(None, "--player", "-p",
+                                         help="Player for twelfth-man (id or name)"),
     commit: bool = typer.Option(False, "--commit"),
 ):
     """Play a chip / booster (dry-run unless --commit)."""
@@ -373,12 +398,24 @@ def chips_play(
     if key not in CHIPS:
         _ = output.fail(f"Unknown chip '{name}'.", code=output.EXIT_ERROR,
                         valid=list(CHIPS.keys()))
+    seg, needs_player = CHIPS[key]
+    target = None
+    if needs_player:
+        if not player:
+            _ = output.fail(f"Chip '{key}' needs a player: --player <id|name>.",
+                            code=output.EXIT_ERROR)
+        target = _resolve(player)
+        seg = f"{seg}/{target.id}"
     committed = False
     with _session() as client:
-        team = _get_team(client)
+        _get_team(client)  # ensures logged in / team exists
         if commit:
-            _gated(f"chip:{key}")
+            _write(client, config.URL_BOOSTER.format(name=seg))
             committed = True
-    output.emit({"action": "chip", "chip": key, "field": CHIPS[key], "committed": committed},
-                lambda: f"[yellow]dry-run[/] would play chip [bold]{key}[/] "
-                        "(commit pending endpoint capture)")
+    detail = {"action": "chip", "chip": key, "committed": committed}
+    if target:
+        detail["player"] = {"id": target.id, "name": target.name}
+    output.emit(detail,
+                lambda: (f"[green]✓ played[/] chip [bold]{key}[/]" if committed
+                         else f"[yellow]dry-run[/] would play chip [bold]{key}[/]")
+                        + (f" on {target.name}" if target else ""))

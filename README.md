@@ -210,22 +210,19 @@ fifafantasy/
 
 ## Status & limitations
 
-- **Reading, analytics, and dry-run planning are fully working.**
-- **Live writes are partial.** The squad-save route (`POST /api/en/fantasy/team`
-  with `{lineup, bench}`) is confirmed, but the **captain / vice / transfer / chip**
-  saves use a separate route that isn't wired up yet. Until it is, `--commit` on
-  those reports a clear "endpoint pending" error instead of guessing — dry-run plans
-  still work. (Contributions welcome — see below.)
+- **Reading, analytics, and dry-run planning: fully working.**
+- **Live writes: implemented.** Each mutation maps to the game's real endpoint —
+  captain/vice (`POST /team/{captain,vice}/{id}`), bench swaps (`POST /substitution/make`),
+  transfers (`POST /transfers/make/{round}`) and chips (`POST /booster/…`). Run with
+  `--commit` to write; without it you get a validated dry-run. Captain/vice are verified
+  end-to-end; swaps, transfers and chips are wired against the discovered request shapes.
 - The tournament starts **June 11, 2026**; until matches begin, player points and
   form read as zero and the analytics populate once games are played.
 
 ## Contributing
 
-Issues and PRs welcome. The most useful contribution right now is **capturing the
-real write endpoints**: with DevTools → Network open on play.fifa.com, perform a
-captain change / transfer / chip play, copy the request, and open an issue with the
-route + payload shape (cookies scrubbed). Wiring those into `commands/manage.py`
-is then a small change.
+Issues and PRs welcome — bug reports, new analytics, and confirming the write
+request shapes (especially transfers and chips) against the live game are all useful.
 
 ## License
 

@@ -27,12 +27,20 @@ URL_SSO_LOGIN = f"{API}/auth/sso/login"
 URL_LOGOUT = f"{API}/auth/logout"
 URL_USER = f"{API}/user"
 
-# Game (authenticated)
+# Game (authenticated) — reads
 URL_TEAM = f"{API_FANTASY}/team"
 URL_PROFILE = f"{API_FANTASY}/profile"
 URL_RANKING = f"{API_FANTASY}/ranking/overall"
 URL_LEAGUES = f"{API_FANTASY}/leagues"
 URL_LEAGUE = f"{API_FANTASY}/league"
+
+# Game (authenticated) — writes (discovered from the FANTASY_CLASSIC JS chunk)
+URL_TEAM_CAPTAIN = f"{API_FANTASY}/team/captain/{{pid}}"   # POST, no body
+URL_TEAM_VICE = f"{API_FANTASY}/team/vice/{{pid}}"         # POST, no body
+URL_SUBSTITUTION = f"{API_FANTASY}/substitution/make"      # POST {roundId, subs:[{out,in}]}
+URL_TRANSFERS = f"{API_FANTASY}/transfers/make/{{round}}"  # POST {transfers:[{out,in}]}
+URL_BOOSTER = f"{API_FANTASY}/booster/{{name}}"            # POST, no body (twelfth-man: name="twelfth-man/{pid}")
+URL_BOOSTER_REVERT = f"{API_FANTASY}/booster/revert"       # POST, no body
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
