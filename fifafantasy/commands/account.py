@@ -8,7 +8,7 @@ import typer
 
 from .. import auth, config, data, output
 from ..client import AuthError, FifaClient, FifaError
-from ..render import console, leagues_table, ranking_table, user_panel
+from ..render import console, ranking_table, user_panel
 
 app = typer.Typer(help="Account, team, leagues and ranking (requires login).")
 
@@ -89,14 +89,6 @@ def _authed_get(url: str):
         output.fail(str(e), code=output.EXIT_ERROR)
     finally:
         client.close()
-
-
-@app.command("leagues")
-def leagues():
-    """List the leagues you belong to."""
-    rows = _authed_get(config.URL_LEAGUES).get("leagues") or []
-    output.emit({"leagues": rows},
-                lambda: leagues_table(rows) if rows else "[yellow]You're not in any leagues yet.[/]")
 
 
 @app.command("rank")

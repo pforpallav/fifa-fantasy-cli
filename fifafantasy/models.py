@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +12,9 @@ class PlayerStats(BaseModel):
     avgPoints: float = 0
     form: float = 0
     lastRoundPoints: float = 0
-    roundPoints: list = Field(default_factory=list)
+    # Empty/[] before the tournament; becomes a {roundId: points} dict once
+    # matches are played — accept either shape.
+    roundPoints: Optional[Union[dict, list]] = None
     nextFixtureFromActiveRound: Optional[int] = None
     nextFixtureFromScheduledRound: Optional[int] = None
 

@@ -33,6 +33,9 @@ URL_PROFILE = f"{API_FANTASY}/profile"
 URL_RANKING = f"{API_FANTASY}/ranking/overall"
 URL_LEAGUES = f"{API_FANTASY}/leagues"
 URL_LEAGUE = f"{API_FANTASY}/league"
+URL_LEAGUE_STANDINGS = f"{API_FANTASY}/ranking/league/{{lid}}"   # GET league standings
+URL_LEAGUE_USERS = f"{API_FANTASY}/league/{{lid}}/league-users"  # GET league members
+URL_MEMBER_TEAM = f"{API_FANTASY}/team/{{uid}}"                  # GET any member's squad
 
 # Game (authenticated) — writes (discovered from the FANTASY_CLASSIC JS chunk)
 URL_TEAM_CAPTAIN = f"{API_FANTASY}/team/captain/{{pid}}"   # POST, no body

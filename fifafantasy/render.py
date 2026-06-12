@@ -177,11 +177,12 @@ def _pitch_row(ids, players: dict, squads: dict, captain, vice):
     return Align.center(t)
 
 
-def team_pitch(team: dict, players: dict, squads: dict):
+def team_pitch(team: dict, players: dict, squads: dict, owner: str | None = None):
     """Render the squad as a formation: one uniform panel — pitch, bench, summary.
 
     Everything lives in a single fixed-width panel so the rows, dividers and the
     summary all align. IDs are resolved from the passed-in feeds — no extra calls.
+    `owner` titles the panel for someone else's team (default: "My Team").
     """
     lineup = team.get("lineup") or {}
     bench = team.get("bench") or {}
@@ -217,7 +218,7 @@ def team_pitch(team: dict, players: dict, squads: dict):
         justify="center",
     ))
 
-    return Panel(Group(*body), title=f"⚽  My Team · {formation}",
+    return Panel(Group(*body), title=f"⚽  {owner or 'My Team'} · {formation}",
                  border_style="green", width=_PITCH_WIDTH, padding=(1, 1))
 
 
@@ -252,6 +253,23 @@ def ranking_table(ranks: list, me_id: int | None = None) -> Table:
             name = f"[bold green]{name} (you)[/]"
         t.add_row(_num(r.get("overallRank")), name,
                   _num(r.get("overallPoints")), str(r.get("level", "")))
+    return t
+
+
+def league_standings_table(ranks: list, title: str = "League", me_id: int | None = None) -> Table:
+    t = Table(title=title, header_style="bold white on blue", expand=False)
+    t.add_column("#", justify="right")
+    t.add_column("Manager", style="bold")
+    t.add_column("Round", justify="right")
+    t.add_column("Total", justify="right")
+    t.add_column("Lvl", justify="right", style="dim")
+    for r in ranks:
+        name = r.get("userName", "-")
+        if me_id is not None and r.get("userId") == me_id:
+            name = f"[bold green]{name} (you)[/]"
+        t.add_row(_num(r.get("overallRank")), name,
+                  _num(r.get("roundPoints")), _num(r.get("overallPoints")),
+                  str(r.get("level", "")))
     return t
 
 

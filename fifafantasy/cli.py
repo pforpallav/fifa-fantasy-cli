@@ -6,7 +6,7 @@ import typer
 from rich.panel import Panel
 
 from . import __version__, data, output
-from .commands import account, fixtures, manage, players
+from .commands import account, fixtures, leagues, manage, players
 from .render import console
 
 app = typer.Typer(
@@ -39,10 +39,10 @@ app.command("squads")(fixtures.squads)
 app.command("login")(account.login)
 app.command("logout")(account.logout)
 app.command("whoami")(account.whoami)
-app.command("leagues")(account.leagues)
 app.command("rank")(account.rank)
 
-# Team management (view + writes), transfers, chips
+# Leagues (list + standings + members + squads), team management, transfers, chips
+app.add_typer(leagues.leagues_app, name="leagues")
 app.add_typer(manage.team_app, name="team")
 app.add_typer(manage.transfers_app, name="transfers")
 app.add_typer(manage.chips_app, name="chips")

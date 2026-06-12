@@ -119,6 +119,15 @@ Rules enforced locally (so invalid asks never reach the API): a squad of
 **2 GK / 5 DEF / 5 MID / 3 FWD = 15**, a **£100m** budget, **max 3 players per
 nation**, and a legal starting XI (1 GK + a valid outfield shape).
 
+## Leagues
+
+```bash
+fifa leagues                          # leagues you belong to
+fifa leagues standings 169133         # the league table
+fifa leagues members 169133           # who's in it
+fifa leagues squad 169133 lucid0      # a member's squad on the pitch (username or userId)
+```
+
 ## Logging in
 
 The game uses **cookie-session auth** (`X-SID` / `ST` / `ST-NO-SS`) behind FIFA's
