@@ -14,7 +14,7 @@ Built on `httpx` + `typer` + `rich`.
 
 - ⚽ **Pitch view** — your starting XI rendered as a formation, with captain/vice and squad value
 - 🔁 **Team management** — swaps, captain/vice, transfers and chips, all **dry-run by default**
-- ✅ **Local rule validation** — budget, squad composition, formation and per-nation limits are checked *before* anything hits the network
+- ✅ **Advisory rule checks** — budget, composition, formation and per-nation limits surface as non-blocking warnings; the server stays the source of truth
 - 🔎 **Player analytics** — search, filter, best value (points-per-million), differentials
 - 🔐 **Browser-free login** — import your existing session; no password, no headless browser
 - 🤖 **Agent-ready** — `--json` on every command, structured errors, meaningful exit codes
@@ -97,9 +97,9 @@ renders the lot as a formation — no per-player API calls:
 
 ### Making changes
 
-Every mutation is **dry-run by default**: it computes the result, validates it
-against the game rules, and shows you the plan *without saving*. Add `--commit` to
-write. Inputs accept a player **id or name**.
+Every mutation is **dry-run by default**: it shows the request it would send (plus
+any advisories) *without saving*. Add `--commit` to write. Inputs accept a player
+**id or name**.
 
 ```bash
 fifa team --list                     # table view instead of the pitch
@@ -115,9 +115,11 @@ fifa transfers make Son Mbappe --commit   # one or more OUT IN pairs
 fifa chips play wildcard                  # play a chip / booster
 ```
 
-Rules enforced locally (so invalid asks never reach the API): a squad of
-**2 GK / 5 DEF / 5 MID / 3 FWD = 15**, a **£100m** budget, **max 3 players per
-nation**, and a legal starting XI (1 GK + a valid outfield shape).
+The **server is the source of truth**: the CLI always sends and reports whatever it
+allows or rejects (a save the server didn't accept is never reported as committed).
+Local rule knowledge — squad of **2 GK / 5 DEF / 5 MID / 3 FWD = 15**, a **£100m**
+budget, **max 3 players per nation**, a legal starting XI — is surfaced as
+**non-blocking advisories** (and on demand via `fifa team validate`), never as a gate.
 
 ## Leagues
 

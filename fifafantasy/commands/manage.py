@@ -1,13 +1,15 @@
 """Team management: view, swaps, captain/vice, transfers, chips, backup/restore.
 
 Design for agents:
-  * Every mutation is DRY-RUN by default — it computes + validates + reports the
-    planned result without touching the network. Pass --commit to actually save.
-  * All rule checks run locally (rules.py) so invalid asks never hit the API.
+  * The server is the source of truth. Local rule checks (rules.py) are computed
+    as NON-BLOCKING ADVISORIES only — we always send the request and report
+    whatever the server allows/rejects, so the CLI never drifts from the game.
+  * Every mutation is DRY-RUN by default — it shows the request it would send and
+    any advisories, without touching the network. Pass --commit to actually save.
+  * `_write` is authoritative for success/failure: it treats a 4xx/5xx OR a 2xx
+    body carrying an `errors` array as a failure (exits non-zero), so --commit
+    never reports a save that the server didn't actually accept.
   * Inputs accept player IDs or (fuzzy) names.
-  * The single network write lives in `_save_squad`; the squad-save route
-    (POST /team {lineup,bench}) is confirmed. Captain/vice/transfer/chip writes
-    use a route still pending a DevTools capture and are gated with a clear error.
 """
 
 from __future__ import annotations
@@ -71,18 +73,25 @@ def _active_round() -> int:
 
 
 def _write(client, url: str, body: dict | None = None) -> dict:
-    """POST a write endpoint. 403 here means validation (not auth), so we read the
-    server's message and exit 1; only true credential failures exit 2."""
+    """POST a write endpoint and trust the server's verdict.
+
+    Treats a 4xx/5xx OR a 2xx response whose body carries an `errors` array as a
+    failure — FIFA sometimes returns 200 with errors, and we must not report those
+    as saved. 403 here is a validation rejection (exit 1); only a real credential
+    failure exits 2.
+    """
     resp = client.raw("POST", url, json_body=body)
-    if resp.status_code < 400:
-        try:
-            return resp.json()
-        except Exception:
-            return {}
-    msg = _parse_errors(resp)
-    is_auth = resp.status_code == 401 or "credential" in msg.lower()
-    raise output.fail(f"Save failed: {msg}",
-                      code=output.EXIT_AUTH if is_auth else output.EXIT_ERROR)
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    has_errors = isinstance(payload, dict) and bool(payload.get("errors"))
+    if resp.status_code >= 400 or has_errors:
+        msg = _parse_errors(resp)
+        is_auth = resp.status_code == 401 or "credential" in msg.lower()
+        raise output.fail(f"Save rejected by server: {msg}",
+                          code=output.EXIT_AUTH if is_auth else output.EXIT_ERROR)
+    return payload or {}
 
 
 def _lineup_subs(current: dict, target: dict) -> list[dict]:
@@ -114,7 +123,8 @@ def _locate(team: dict, pid: int):
 
 
 def _emit_plan(action: str, detail: dict, team_after: dict, players: dict,
-               squads: dict, committed: bool):
+               squads: dict, committed: bool, advisories: list | None = None):
+    advisories = advisories or []
     sq = [players[i] for i in rules.squad_ids(team_after) if i in players]
     plan = {
         "action": action,
@@ -123,14 +133,17 @@ def _emit_plan(action: str, detail: dict, team_after: dict, players: dict,
         "squadValue": round(sum(p.price for p in sq), 1),
         "captain": team_after.get("captain"),
         "vice": team_after.get("vice"),
+        "advisories": advisories,
         "committed": committed,
     }
 
     def render():
         from rich.console import Group
         tag = "[green]✓ committed[/]" if committed else "[yellow]dry-run[/] (use --commit to save)"
-        head = f"{tag}  ·  {action}: {detail.get('summary', '')}"
-        return Group(head, "", team_pitch(team_after, players, squads))
+        parts = [f"{tag}  ·  {action}: {detail.get('summary', '')}"]
+        parts += [f"[yellow]⚠ {a}[/]" for a in advisories]
+        parts += ["", team_pitch(team_after, players, squads)]
+        return Group(*parts)
 
     output.emit(plan, render)
 
@@ -175,27 +188,28 @@ def swap(
     in_player: str = typer.Argument(..., metavar="IN", help="Player entering the XI (id or name)"),
     commit: bool = typer.Option(False, "--commit", help="Actually save (default: dry-run)"),
 ):
-    """Swap a starter for a bench player (keeps a legal formation)."""
+    """Swap a starter for a bench player. Sends the substitution and reports the
+    server's verdict; local checks are advisory only."""
     out_p, in_p = _resolve(out_player), _resolve(in_player)
+    advisories = []
     with _session() as client:
         team = _get_team(client)
         out_where, out_pos = _locate(team, out_p.id)
         in_where, in_pos = _locate(team, in_p.id)
         if out_where != "lineup":
-            _ = output.fail(f"{out_p.name} is not in the starting XI.", code=output.EXIT_ERROR)
+            advisories.append(f"{out_p.name} is not in your starting XI — the server may reject this.")
         if in_where != "bench":
-            _ = output.fail(f"{in_p.name} is not on the bench.", code=output.EXIT_ERROR)
+            advisories.append(f"{in_p.name} is not on your bench — the server may reject this.")
 
+        # Best-effort local projection of the result (only for a normal XI<->bench swap).
         after = copy.deepcopy(team)
-        after["lineup"][out_pos].remove(out_p.id)
-        after["lineup"][in_pos].append(in_p.id)
-        after["bench"][in_pos].remove(in_p.id)
-        after["bench"][out_pos].append(out_p.id)
-        after["benchOrder"] = [out_p.id if x == in_p.id else x for x in (team.get("benchOrder") or [])]
-
-        errs = rules.validate_lineup(after["lineup"])
-        if errs:
-            _ = output.fail("Illegal formation after swap.", code=output.EXIT_ERROR, violations=errs)
+        if out_where == "lineup" and in_where == "bench":
+            after["lineup"][out_pos].remove(out_p.id)
+            after["lineup"][in_pos].append(in_p.id)
+            after["bench"][in_pos].remove(in_p.id)
+            after["bench"][out_pos].append(out_p.id)
+            after["benchOrder"] = [out_p.id if x == in_p.id else x for x in (team.get("benchOrder") or [])]
+            advisories += rules.validate_lineup(after["lineup"])
 
         committed = False
         if commit:
@@ -205,17 +219,17 @@ def swap(
     detail = {"out": {"id": out_p.id, "name": out_p.name},
               "in": {"id": in_p.id, "name": in_p.name},
               "summary": f"{out_p.name} → bench, {in_p.name} → XI"}
-    _emit_plan("swap", detail, after, data.player_map(), data.squad_map(), committed)
+    _emit_plan("swap", detail, after, data.player_map(), data.squad_map(), committed, advisories)
 
 
 # ---------- captain / vice ----------
 def _set_armband(field: str, other: str, target_query: str, commit: bool, label: str):
     target = _resolve(target_query)
+    advisories = []
     with _session() as client:
         team = _get_team(client)
         if target.id not in rules.lineup_ids(team["lineup"]):
-            _ = output.fail(f"{target.name} is not in the starting XI — can't be {label}.",
-                            code=output.EXIT_ERROR)
+            advisories.append(f"{target.name} is not in your starting XI — the server may reject this.")
         after = copy.deepcopy(team)
         # If target currently holds the other armband, swap them.
         if team.get(other) == target.id:
@@ -228,7 +242,7 @@ def _set_armband(field: str, other: str, target_query: str, commit: bool, label:
             committed = True
     detail = {label: {"id": target.id, "name": target.name},
               "summary": f"{label} → {target.name}"}
-    _emit_plan(label, detail, after, data.player_map(), data.squad_map(), committed)
+    _emit_plan(label, detail, after, data.player_map(), data.squad_map(), committed, advisories)
 
 
 @team_app.command("captain")
@@ -248,26 +262,25 @@ def vice(player: str = typer.Argument(..., help="New vice-captain (id or name)")
 # ---------- validate ----------
 @team_app.command("validate")
 def validate():
-    """Check your current squad and formation against the game rules."""
+    """Local advisory check of your squad/formation. The server is authoritative —
+    this is a convenience heads-up, not a gate."""
     with _session() as client:
         team = _get_team(client)
     players = data.player_map()
     sq = [players[i] for i in rules.squad_ids(team) if i in players]
-    squad_errs = rules.validate_squad(sq)
-    lineup_errs = rules.validate_lineup(team["lineup"])
-    violations = squad_errs + lineup_errs
-    result = {"valid": not violations, "violations": violations,
+    advisories = rules.validate_squad(sq) + rules.validate_lineup(team["lineup"])
+    result = {"ok": not advisories, "advisories": advisories,
               "summary": rules.squad_summary(sq),
               "formation": rules.formation_str(team["lineup"])}
 
     def render():
         from rich.panel import Panel
-        if not violations:
-            return Panel(f"[green]✓ Squad is legal[/]  ·  formation {result['formation']}  ·  "
+        if not advisories:
+            return Panel(f"[green]✓ Looks fine[/]  ·  formation {result['formation']}  ·  "
                          f"value £{result['summary']['value']}m / £{config.BUDGET:.0f}m",
-                         border_style="green", title="Validate")
-        body = "\n".join(f"[red]•[/] {v}" for v in violations)
-        return Panel(body, border_style="red", title="Rule violations")
+                         border_style="green", title="Advisory")
+        body = "\n".join(f"[yellow]⚠[/] {a}" for a in advisories)
+        return Panel(body, border_style="yellow", title="Advisory (server is authoritative)")
 
     output.emit(result, render)
 
@@ -314,55 +327,53 @@ def restore(commit: bool = typer.Option(False, "--commit", help="Actually save t
 
 # ---------- transfers ----------
 def _plan_transfers(team: dict, pairs: list[tuple]) -> tuple[dict, dict, list[str]]:
-    """Apply OUT→IN pairs to a squad copy. Returns (after, detail, violations)."""
+    """Apply OUT→IN pairs to a squad copy. Returns (after, detail, advisories).
+
+    Every requested move is recorded (and will be sent) — anything that looks off
+    is flagged as an advisory, not dropped, so the server makes the final call.
+    """
     after = copy.deepcopy(team)
     squad = set(rules.squad_ids(team))
-    moves, spent = [], 0.0
-    errs = []
+    moves, spent, advisories = [], 0.0, []
     for out_q, in_q in pairs:
         out_p, in_p = _resolve(out_q), _resolve(in_q)
         where, pos = _locate(after, out_p.id)
         if where is None:
-            errs.append(f"{out_p.name} is not in your squad")
-            continue
-        if in_p.id in squad:
-            errs.append(f"{in_p.name} is already in your squad")
-            continue
-        if in_p.position != out_p.position:
-            errs.append(f"position mismatch: {out_p.name} ({out_p.position}) → "
-                        f"{in_p.name} ({in_p.position})")
-            continue
-        after[where][pos] = [in_p.id if x == out_p.id else x for x in after[where][pos]]
-        if after.get("benchOrder"):
-            after["benchOrder"] = [in_p.id if x == out_p.id else x for x in after["benchOrder"]]
-        squad.discard(out_p.id)
-        squad.add(in_p.id)
+            advisories.append(f"{out_p.name} is not in your squad — the server may reject this.")
+        elif in_p.id in squad:
+            advisories.append(f"{in_p.name} is already in your squad — the server may reject this.")
+        elif in_p.position != out_p.position:
+            advisories.append(f"position mismatch: {out_p.name} ({out_p.position}) → "
+                              f"{in_p.name} ({in_p.position}) — the server may reject this.")
+        if where is not None:  # best-effort projection for the display
+            after[where][pos] = [in_p.id if x == out_p.id else x for x in after[where][pos]]
+            if after.get("benchOrder"):
+                after["benchOrder"] = [in_p.id if x == out_p.id else x for x in after["benchOrder"]]
+            squad.discard(out_p.id)
+            squad.add(in_p.id)
         spent += in_p.price - out_p.price
         moves.append({"out": {"id": out_p.id, "name": out_p.name, "price": out_p.price},
                       "in": {"id": in_p.id, "name": in_p.name, "price": in_p.price},
                       "cost": round(in_p.price - out_p.price, 1)})
     players = data.player_map()
     sq_players = [players[i] for i in squad if i in players]
-    errs += rules.validate_squad(sq_players)
+    advisories += rules.validate_squad(sq_players)
     detail = {"moves": moves, "netCost": round(spent, 1),
               "summary": ", ".join(f"{m['out']['name']}→{m['in']['name']}" for m in moves)}
-    return after, detail, errs
+    return after, detail, advisories
 
 
 def _run_transfers(pairs: list[tuple], commit: bool):
     with _session() as client:
         team = _get_team(client)
-        after, detail, errs = _plan_transfers(team, pairs)
-        if errs:
-            _ = output.fail("Transfer breaks the rules.", code=output.EXIT_ERROR,
-                            violations=errs, moves=detail["moves"])
+        after, detail, advisories = _plan_transfers(team, pairs)
         committed = False
         if commit:
             payload = {"transfers": [{"out": m["out"]["id"], "in": m["in"]["id"]}
                                      for m in detail["moves"]]}
             _write(client, config.URL_TRANSFERS.format(round=_active_round()), payload)
             committed = True
-    _emit_plan("transfer", detail, after, data.player_map(), data.squad_map(), committed)
+    _emit_plan("transfer", detail, after, data.player_map(), data.squad_map(), committed, advisories)
 
 
 @transfers_app.command("plan")
